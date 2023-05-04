@@ -4,19 +4,25 @@
 # In[ ]:
 
 
-import torch
-import numpy as np
-
-import torch.nn.functional as F
-import torch.nn as nn
-
-from torch_geometric.data import Data, DataLoader
+import argparse
 import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import pickle
+import scipy.io
+from timeit import default_timer
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch_geometric.data import Data, DataLoader
+
 from utilities import *
 from nn_conv import NNConv, NNConv_old
 
-from timeit import default_timer
-import scipy.io
+import sys, os
+sys.path.append(os.path.join(os.path.dirname("__file__"), '..', '..'))
+sys.path.append(os.path.join(os.path.dirname("__file__"), '..', '..', '..'))
+from foundation_pdes.pytorch_net.util import record_data, to_cpu
 
 
 # In[ ]:
@@ -49,25 +55,76 @@ class KernelNN3(torch.nn.Module):
 # In[ ]:
 
 
+# DATA_PATH = "../../data/Poisson1.0/files/"
+
+# f_all = []
+# for index in range(1, 1001):
+#     f_pd = pd.read_table(
+#         DATA_PATH + f'RHS_{index:04d}.txt',
+#         delimiter=' ',
+#         skipinitialspace=True,
+#         header=None,
+#         names=["x", "y", "f"],
+#         index_col=False,
+#     )                
+#     f_all.append(f_pd.values)
+# f_all = np.stack(f_all)
+
+# sol_all = []
+# for index in range(1, 1001):
+#     sol_pd = pd.read_table(DATA_PATH + f'SOL_{index:04d}.txt',
+#         delimiter=' ',
+#         skipinitialspace=True,
+#         header=None,
+#         names=["sol"],
+#         index_col=False,
+#     )
+#     sol_all.append(sol_pd.values)
+# sol_all = np.stack(sol_all)
+
+# np.save(DATA_PATH + "RHS_all.npy", f_all)
+# np.save(DATA_PATH + "SOL_all.npy", sol_all)
+
+
+# In[ ]:
+
+
+parser = argparse.ArgumentParser(description='Training')
+
+parser.add_argument('--epochs', default=1000, type=int,
+                    help='Epochs')
+parser.add_argument('--lr', default=0.0001, type=float,
+                    help='learning rate')
+parser.add_argument('--inspect_interval', default=100, type=int,
+                    help='inspect interval')
+parser.add_argument('--id', default="0", type=str,
+                    help='ID')
+try:
+    get_ipython().run_line_magic('load_ext', 'autoreload')
+    get_ipython().run_line_magic('autoreload', '2')
+    is_jupyter = True
+    args = parser.parse_args([])
+except:
+    args = parser.parse_args()
+
+
+# In[ ]:
+
+
+dataset_type = "poisson1.0"
+
 TRAIN_PATH = 'data/piececonst_r241_N1024_smooth1.mat'
 TEST_PATH = 'data/piececonst_r241_N1024_smooth2.mat'
+DATA_PATH = "../../data/Poisson1.0/files/"
 
 ms = [200]
 case = 0
 r = 1
-s = int(((241 - 1)/r) + 1)
-n = s**2
 m = ms[case]
 k = 1
 
 radius_train = 0.2
 radius_test = 0.2
-print('resolution', s)
-
-
-ntrain = 100
-ntest = 100
-
 
 batch_size = 1
 batch_size2 = 1
@@ -77,36 +134,94 @@ depth = 4
 edge_features = 6
 node_features = 6
 
-epochs = 100
-learning_rate = 0.0001
+epochs = args.epochs
+learning_rate = args.lr
 scheduler_step = 50
 scheduler_gamma = 0.5
+inspect_interval = args.inspect_interval
 
-
-path = 'neurips1_GKN_s'+str(s)+'_ntrain'+str(ntrain)+'_kerwidth'+str(ker_width) + '_m0' + str(m)
-path_model = 'model/' + path
-path_train_err = 'results/' + path + 'train.txt'
-path_test_err = 'results/' + path + 'test.txt'
-path_runtime = 'results/' + path + 'time.txt'
-path_image = 'results/' + path
 
 runtime = np.zeros(2, )
 t1 = default_timer()
 
+if dataset_type == "darcy":
+    s = int(((241 - 1)/r) + 1)
+    n = s**2
+    print('resolution', s)
+    ntrain = 100
+    ntest = 100
+    path = 'neurips1_GKN_s'+str(s)+'_ntrain'+str(ntrain)+'_kerwidth'+str(ker_width) + '_m0' + str(m) + "_id_" + args.id
+    path_model = 'model/' + path
+    path_train_err = 'results/' + path + 'train.txt'
+    path_test_err = 'results/' + path + 'test.txt'
+    path_runtime = 'results/' + path + 'time.txt'
+    path_image = 'results/' + path
 
-reader = MatReader(TRAIN_PATH)
-train_a = reader.read_field('coeff')[:ntrain,::r,::r].reshape(ntrain,-1)
-train_a_smooth = reader.read_field('Kcoeff')[:ntrain,::r,::r].reshape(ntrain,-1)
-train_a_gradx = reader.read_field('Kcoeff_x')[:ntrain,::r,::r].reshape(ntrain,-1)
-train_a_grady = reader.read_field('Kcoeff_y')[:ntrain,::r,::r].reshape(ntrain,-1)
-train_u = reader.read_field('sol')[:ntrain,::r,::r].reshape(ntrain,-1)
+    reader = MatReader(TRAIN_PATH)
+    train_a = reader.read_field('coeff')[:ntrain,::r,::r].reshape(ntrain,-1)
+    train_a_smooth = reader.read_field('Kcoeff')[:ntrain,::r,::r].reshape(ntrain,-1)
+    train_a_gradx = reader.read_field('Kcoeff_x')[:ntrain,::r,::r].reshape(ntrain,-1)
+    train_a_grady = reader.read_field('Kcoeff_y')[:ntrain,::r,::r].reshape(ntrain,-1)
+    train_u = reader.read_field('sol')[:ntrain,::r,::r].reshape(ntrain,-1)
 
-reader.load_file(TEST_PATH)
-test_a = reader.read_field('coeff')[:ntest,::r,::r].reshape(ntest,-1)
-test_a_smooth = reader.read_field('Kcoeff')[:ntest,::r,::r].reshape(ntest,-1)
-test_a_gradx = reader.read_field('Kcoeff_x')[:ntest,::r,::r].reshape(ntest,-1)
-test_a_grady = reader.read_field('Kcoeff_y')[:ntest,::r,::r].reshape(ntest,-1)
-test_u = reader.read_field('sol')[:ntest,::r,::r].reshape(ntest,-1)
+    reader.load_file(TEST_PATH)
+    test_a = reader.read_field('coeff')[:ntest,::r,::r].reshape(ntest,-1)
+    test_a_smooth = reader.read_field('Kcoeff')[:ntest,::r,::r].reshape(ntest,-1)
+    test_a_gradx = reader.read_field('Kcoeff_x')[:ntest,::r,::r].reshape(ntest,-1)
+    test_a_grady = reader.read_field('Kcoeff_y')[:ntest,::r,::r].reshape(ntest,-1)
+    test_u = reader.read_field('sol')[:ntest,::r,::r].reshape(ntest,-1)
+elif dataset_type == "poisson1.0":
+    s = int(((32 - 1)/r) + 1)
+    n = s**2
+    print('resolution', s)
+
+    ntrain = 900
+    ntest = 100
+    path = 'poisson_s'+str(s)+'_ntrain'+str(ntrain)+'_kerwidth'+str(ker_width) + '_m0' + str(m)
+    path_model = 'model/' + path
+    path_train_err = 'results/' + path + 'train.txt'
+    path_test_err = 'results/' + path + 'test.txt'
+    path_runtime = 'results/' + path + 'time.txt'
+    path_image = 'results/' + path
+
+    f_all = np.load(DATA_PATH + "RHS_all.npy")
+    sol_all = np.load(DATA_PATH + "SOL_all.npy")
+
+    f_all = np.load(DATA_PATH + "RHS_all.npy")
+    sol_all = np.load(DATA_PATH + "SOL_all.npy")
+
+    all_a = f_all[:,:,-1]
+    all_a_smooth = all_a
+    all_a_reshape = all_a.reshape(-1, 32, 32)
+    all_a_gradx = np.concatenate([
+        all_a_reshape[:,1:2] - all_a_reshape[:,0:1],
+        (all_a_reshape[:,2:] - all_a_reshape[:,:-2]) / 2,
+        all_a_reshape[:,-1:] - all_a_reshape[:,-2:-1],
+    ], 1)
+    all_a_gradx = all_a_gradx.reshape(-1, 1024)
+    all_a_grady = np.concatenate([
+        all_a_reshape[:,:,1:2] - all_a_reshape[:,:,0:1],
+        (all_a_reshape[:,:,2:] - all_a_reshape[:,:,:-2]) / 2,
+        all_a_reshape[:,:,-1:] - all_a_reshape[:,:,-2:-1],
+    ], 2)
+    all_a_grady = all_a_grady.reshape(-1, 1024)
+    all_u = sol_all[:,:,0]
+
+
+    train_a = torch.FloatTensor(all_a[:ntrain])
+    train_a_smooth = torch.FloatTensor(all_a_smooth[:ntrain])
+    train_a_gradx = torch.FloatTensor(all_a_gradx[:ntrain])
+    train_a_grady = torch.FloatTensor(all_a_grady[:ntrain])
+    train_u = torch.FloatTensor(all_u[:ntrain])
+
+    test_a = torch.FloatTensor(all_a[ntrain:])
+    test_a_smooth = torch.FloatTensor(all_a_smooth[ntrain:])
+    test_a_gradx = torch.FloatTensor(all_a_gradx[ntrain:])
+    test_a_grady = torch.FloatTensor(all_a_grady[ntrain:])
+    test_u = torch.FloatTensor(all_u[ntrain:])
+
+else:
+    raise
 
 
 a_normalizer = GaussianNormalizer(train_a)
@@ -158,7 +273,7 @@ for j in range(ntest):
                                        ], dim=1),
                           y=test_u[j, idx], edge_index=edge_index, edge_attr=edge_attr, sample_idx=idx
                           ))
-#
+
 train_loader = DataLoader(data_train, batch_size=batch_size, shuffle=True)
 test_loader = DataLoader(data_test, batch_size=batch_size2, shuffle=False)
 
@@ -176,6 +291,8 @@ u_normalizer.cuda()
 ttrain = np.zeros((epochs, ))
 ttest = np.zeros((epochs,))
 model.train()
+
+data_record = {}
 
 
 # In[ ]:
@@ -217,12 +334,9 @@ for ep in range(epochs):
     ttrain[ep] = train_l2/(ntrain * k)
     ttest[ep] = test_l2/ntest
 
-    print(k, ntrain, ep, t2-t1, t3-t2, train_mse/len(train_loader), train_l2/(ntrain * k), test_l2/ntest)
-
-runtime[0] = t2-t1
-runtime[1] = t3-t2
-np.savetxt(path_train_err, ttrain)
-np.savetxt(path_test_err, ttest)
-np.savetxt(path_runtime, runtime)
-torch.save(model, path_model)
+    print(f"Epoch {ep:03d}     train_MSE: {train_mse/len(train_loader):.6f}  \t train_L2: {train_l2/(ntrain * k):.6f}\t test_L2: {test_l2/ntest:.6f}")
+    record_data(data_record, [ep, train_mse/len(train_loader), train_l2/(ntrain * k), test_l2/ntest], ["epoch", "train_MSE", "train_L2", "test_L2"])
+    if ep % inspect_interval == 0 or ep == epochs - 1:
+        record_data(data_record, [ep, to_cpu(model.state_dict())], ["save_epoch", "state_dict"])
+        pickle.dump(data_record, open(path_model, "wb"))
 
