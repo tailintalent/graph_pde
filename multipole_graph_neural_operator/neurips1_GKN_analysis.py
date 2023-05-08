@@ -1,15 +1,17 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[1]:
+# In[ ]:
 
 
 import argparse
 import matplotlib.pyplot as plt
+import matplotlib.backends.backend_pdf
 import numpy as np
 import pandas as pd
 import pickle
 import scipy.io
+import seaborn as sns
 from timeit import default_timer
 import torch
 import torch.nn as nn
@@ -22,10 +24,10 @@ from nn_conv import NNConv, NNConv_old
 import sys, os
 sys.path.append(os.path.join(os.path.dirname("__file__"), '..', '..'))
 sys.path.append(os.path.join(os.path.dirname("__file__"), '..', '..', '..'))
-from foundation_pdes.pytorch_net.util import record_data, to_cpu
+from foundation_pdes.pytorch_net.util import record_data, to_cpu, to_np_array
 
 
-# In[2]:
+# In[ ]:
 
 
 class KernelNN3(torch.nn.Module):
@@ -51,42 +53,34 @@ class KernelNN3(torch.nn.Module):
         x = self.fc2(x)
         return x
 
-
-# In[4]:
-
-
-# DATA_PATH = "../../data/Poisson1.0_64/files/"
-
-# f_all = []
-# for index in range(1, 1001):
-#     f_pd = pd.read_table(
-#         DATA_PATH + f'RHS_{index:04d}.txt',
-#         delimiter=' ',
-#         skipinitialspace=True,
-#         header=None,
-#         names=["x", "y", "f"],
-#         index_col=False,
-#     )                
-#     f_all.append(f_pd.values)
-# f_all = np.stack(f_all)
-
-# sol_all = []
-# for index in range(1, 1001):
-#     sol_pd = pd.read_table(DATA_PATH + f'SOL_{index:04d}.txt',
-#         delimiter=' ',
-#         skipinitialspace=True,
-#         header=None,
-#         names=["sol"],
-#         index_col=False,
-#     )
-#     sol_all.append(sol_pd.values)
-# sol_all = np.stack(sol_all)
-
-# np.save(DATA_PATH + "RHS_all.npy", f_all)
-# np.save(DATA_PATH + "SOL_all.npy", sol_all)
+def plot(pred, y, a_ori=None, diff_v_limit=0.01, title=""):
+    vmin = min(pred.min().item(), y.min().item())
+    vmax = max(pred.max().item(), y.max().item())
+    fontsize = 15
+    add_plot = 0
+    if a_ori is not None:
+        add_plot += 1
+    L2 = myloss(pred.view(1,-1), y.view(1, -1)).item()
+    mae = nn.L1Loss()(pred.view(1,-1), y.view(1, -1)).item()
+    fig = plt.figure(figsize=(25,4.5))
+    plt.subplot(1,3+add_plot,1)
+    sns.heatmap(to_np_array(pred).reshape(32,32), square=True, xticklabels=False, vmin=vmin, vmax=vmax, yticklabels=False)
+    plt.title(f"{title}: pred, L2={L2:.6f}", fontsize=fontsize)
+    plt.subplot(1,3+add_plot,2)
+    sns.heatmap(to_np_array(y).reshape(32,32), square=True, xticklabels=False, vmin=vmin, vmax=vmax, yticklabels=False)
+    plt.title(f"gt, MAE={mae:.6f}", fontsize=fontsize)
+    plt.subplot(1,3+add_plot,3)
+    sns.heatmap(to_np_array(pred - y).reshape(32,32), square=True, xticklabels=False, yticklabels=False, vmin=-diff_v_limit, vmax=diff_v_limit, cmap="PiYG")
+    plt.title("pred - gt", fontsize=fontsize)
+    if add_plot > 0:
+        plt.subplot(1,3+add_plot,4)
+        sns.heatmap(to_np_array(a_ori).reshape(32,32), square=True, xticklabels=False, yticklabels=False)
+        plt.title("f", fontsize=fontsize)
+    plt.show()
+    return fig
 
 
-# In[3]:
+# In[ ]:
 
 
 parser = argparse.ArgumentParser(description='Training')
@@ -115,6 +109,7 @@ dataset_type = "poisson1.0"
 
 TRAIN_PATH = 'data/piececonst_r241_N1024_smooth1.mat'
 TEST_PATH = 'data/piececonst_r241_N1024_smooth2.mat'
+DATA_PATH = "../../data/Poisson1.0/files/"
 
 ms = [200]
 case = 0
@@ -169,12 +164,10 @@ if dataset_type == "darcy":
     test_a_gradx = reader.read_field('Kcoeff_x')[:ntest,::r,::r].reshape(ntest,-1)
     test_a_grady = reader.read_field('Kcoeff_y')[:ntest,::r,::r].reshape(ntest,-1)
     test_u = reader.read_field('sol')[:ntest,::r,::r].reshape(ntest,-1)
-elif dataset_type.startswith("poisson1.0"):
-    resolution = eval(dataset_type.split("-")[1])
-    s = int(((resolution - 1)/r) + 1)
+elif dataset_type == "poisson1.0":
+    s = int(((32 - 1)/r) + 1)
     n = s**2
     print('resolution', s)
-    DATA_PATH = f"../../data/Poisson1.0_{resolution}/files/"
 
     ntrain = 900
     ntest = 100
@@ -240,6 +233,7 @@ test_a_grady = agy_normalizer.encode(test_a_grady)
 
 u_normalizer = UnitGaussianNormalizer(train_u)
 train_u = u_normalizer.encode(train_u)
+# test_u = y_normalizer.encode(test_u)
 
 
 
@@ -263,7 +257,7 @@ for j in range(ntrain):
 meshgenerator = RandomMeshGenerator([[0,1],[0,1]],[s,s], sample_size=m)
 data_test = []
 for j in range(ntest):
-    idx = meshgenerator.sample()
+    idx = meshgenerator.sample(is_random=False)
     grid = meshgenerator.get_grid()
     edge_index = meshgenerator.ball_connectivity(radius_test)
     edge_attr = meshgenerator.attributes(theta=test_a[j,:])
@@ -292,50 +286,43 @@ ttrain = np.zeros((epochs, ))
 ttest = np.zeros((epochs,))
 model.train()
 
-data_record = {}
+# Load model:
+data_record = pickle.load(open("model/poisson_s32_ntrain900_kerwidth256_m0200", "rb"))
+model.load_state_dict(data_record["state_dict"][-1])
 
 
 # In[ ]:
 
 
-for ep in range(epochs):
-    t1 = default_timer()
-    train_mse = 0.0
-    train_l2 = 0.0
-    for batch in train_loader:
-        batch = batch.to(device)
+isplot = False
+if isplot:
+    pdf = matplotlib.backends.backend_pdf.PdfPages("analysis.pdf")
+analysis_record = {}
+model.eval()
+with torch.no_grad():
+    for ii, data in enumerate(test_loader):
+        data = data.to(device)
+        out = model(data)
+        out = u_normalizer.decode(out.view(batch_size2,-1), sample_idx=data.sample_idx.view(batch_size2,-1))
+        a_ori = a_normalizer.decode(data.x[:,2].view(1,-1))
+        l2_item = myloss(out, data.y.view(batch_size2, -1)).item()
+        mae_item = nn.L1Loss()(out, data.y.view(batch_size2, -1)).item()
+        record_data(analysis_record, [l2_item, mae_item], ["L2", "MAE"])
+        if isplot:
+            fig = plot(out, data.y, a_ori=a_ori, diff_v_limit=0.0075, title=f"{901+ii}")
+            pdf.savefig(fig)
+if isplot:
+    pdf.close()
 
-        optimizer.zero_grad()
-        out = model(batch)
-        mse = F.mse_loss(out.view(-1, 1), batch.y.view(-1,1))
-        mse.backward()
 
-        l2 = myloss(
-            u_normalizer.decode(out.view(batch_size, -1), sample_idx=batch.sample_idx.view(batch_size, -1)),
-            u_normalizer.decode(batch.y.view(batch_size, -1), sample_idx=batch.sample_idx.view(batch_size, -1)))
-        optimizer.step()
-        train_mse += mse.item()
-        train_l2 += l2.item()
+# In[ ]:
 
-    scheduler.step()
-    t2 = default_timer()
 
-    model.eval()
-    test_l2 = 0.0
-    with torch.no_grad():
-        for batch in test_loader:
-            batch = batch.to(device)
-            out = model(batch)
-            out = u_normalizer.decode(out.view(batch_size2,-1), sample_idx=batch.sample_idx.view(batch_size2,-1))
-            test_l2 += myloss(out, batch.y.view(batch_size2, -1)).item()
-
-    t3 = default_timer()
-    ttrain[ep] = train_l2/(ntrain * k)
-    ttest[ep] = test_l2/ntest
-
-    print(f"Epoch {ep:03d}     train_MSE: {train_mse/len(train_loader):.6f}  \t train_L2: {train_l2/(ntrain * k):.6f}\t test_L2: {test_l2/ntest:.6f}")
-    record_data(data_record, [ep, train_mse/len(train_loader), train_l2/(ntrain * k), test_l2/ntest], ["epoch", "train_MSE", "train_L2", "test_L2"])
-    if ep % inspect_interval == 0 or ep == epochs - 1:
-        record_data(data_record, [ep, to_cpu(model.state_dict())], ["save_epoch", "state_dict"])
-        pickle.dump(data_record, open(path_model, "wb"))
+fontsize = 14
+plt.figure(figsize=(8,6))
+plt.scatter(analysis_record["MAE"], analysis_record["L2"], s=6)
+plt.xlabel("MAE", fontsize=fontsize)
+plt.ylabel("L2", fontsize=fontsize)
+plt.tick_params(labelsize=fontsize)
+plt.show()
 

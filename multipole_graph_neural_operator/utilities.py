@@ -379,9 +379,12 @@ class RandomMeshGenerator(object):
         self.grid_sample = self.grid
 
 
-    def sample(self):
-        perm = torch.randperm(self.n)
-        self.idx = perm[:self.m]
+    def sample(self, is_random=True):
+        if not is_random:
+            self.idx = torch.arange(self.n)
+        else:
+            perm = torch.randperm(self.n)
+            self.idx = perm[:self.m]
         self.grid_sample = self.grid[self.idx]
         return self.idx
 
