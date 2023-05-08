@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[1]:
+# In[ ]:
 
 
 import argparse
@@ -9,12 +9,14 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import pickle
+import pprint as pp
 import scipy.io
 from timeit import default_timer
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.data import Data, DataLoader
+from torchvision.transforms import GaussianBlur
 
 from utilities import *
 from nn_conv import NNConv, NNConv_old
@@ -22,10 +24,10 @@ from nn_conv import NNConv, NNConv_old
 import sys, os
 sys.path.append(os.path.join(os.path.dirname("__file__"), '..', '..'))
 sys.path.append(os.path.join(os.path.dirname("__file__"), '..', '..', '..'))
-from foundation_pdes.pytorch_net.util import record_data, to_cpu
+from foundation_pdes.pytorch_net.util import record_data, to_cpu, to_np_array
 
 
-# In[2]:
+# In[ ]:
 
 
 class KernelNN3(torch.nn.Module):
@@ -52,7 +54,7 @@ class KernelNN3(torch.nn.Module):
         return x
 
 
-# In[4]:
+# In[ ]:
 
 
 # DATA_PATH = "../../data/Poisson1.0_64/files/"
@@ -86,11 +88,13 @@ class KernelNN3(torch.nn.Module):
 # np.save(DATA_PATH + "SOL_all.npy", sol_all)
 
 
-# In[3]:
+# In[ ]:
 
 
 parser = argparse.ArgumentParser(description='Training')
 
+parser.add_argument('--dataset_type', default="poisson1.0-32", type=str,
+                    help='dataset type')
 parser.add_argument('--epochs', default=1000, type=int,
                     help='Epochs')
 parser.add_argument('--lr', default=0.0001, type=float,
@@ -106,12 +110,13 @@ try:
     args = parser.parse_args([])
 except:
     args = parser.parse_args()
+pp.pprint(args.__dict__)
 
 
 # In[ ]:
 
 
-dataset_type = "poisson1.0"
+dataset_type = args.dataset_type
 
 TRAIN_PATH = 'data/piececonst_r241_N1024_smooth1.mat'
 TEST_PATH = 'data/piececonst_r241_N1024_smooth2.mat'
@@ -178,7 +183,7 @@ elif dataset_type.startswith("poisson1.0"):
 
     ntrain = 900
     ntest = 100
-    path = 'poisson_s'+str(s)+'_ntrain'+str(ntrain)+'_kerwidth'+str(ker_width) + '_m0' + str(m)
+    path = 'poisson_s'+str(s)+'_dataset_' + dataset_type + '_ntrain'+str(ntrain)+'_kerwidth'+str(ker_width) + '_m0' + str(m)
     path_model = 'model/' + path
     path_train_err = 'results/' + path + 'train.txt'
     path_test_err = 'results/' + path + 'test.txt'
@@ -190,24 +195,24 @@ elif dataset_type.startswith("poisson1.0"):
 
     f_all = np.load(DATA_PATH + "RHS_all.npy")
     sol_all = np.load(DATA_PATH + "SOL_all.npy")
+    gblur = GaussianBlur(kernel_size=5, sigma=5)
 
     all_a = f_all[:,:,-1]
-    all_a_smooth = all_a
-    all_a_reshape = all_a.reshape(-1, 32, 32)
+    all_a_smooth = to_np_array(gblur(torch.tensor(all_a.reshape(all_a.shape[0], resolution, resolution))).flatten(start_dim=1))
+    all_a_reshape = all_a_smooth.reshape(-1, resolution, resolution)
     all_a_gradx = np.concatenate([
         all_a_reshape[:,1:2] - all_a_reshape[:,0:1],
         (all_a_reshape[:,2:] - all_a_reshape[:,:-2]) / 2,
         all_a_reshape[:,-1:] - all_a_reshape[:,-2:-1],
     ], 1)
-    all_a_gradx = all_a_gradx.reshape(-1, 1024)
+    all_a_gradx = all_a_gradx.reshape(-1, n)
     all_a_grady = np.concatenate([
         all_a_reshape[:,:,1:2] - all_a_reshape[:,:,0:1],
         (all_a_reshape[:,:,2:] - all_a_reshape[:,:,:-2]) / 2,
         all_a_reshape[:,:,-1:] - all_a_reshape[:,:,-2:-1],
     ], 2)
-    all_a_grady = all_a_grady.reshape(-1, 1024)
+    all_a_grady = all_a_grady.reshape(-1, n)
     all_u = sol_all[:,:,0]
-
 
     train_a = torch.FloatTensor(all_a[:ntrain])
     train_a_smooth = torch.FloatTensor(all_a_smooth[:ntrain])

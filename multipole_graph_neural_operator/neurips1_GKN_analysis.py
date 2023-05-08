@@ -17,6 +17,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.data import Data, DataLoader
+from torchvision.transforms import GaussianBlur
 
 from utilities import *
 from nn_conv import NNConv, NNConv_old
@@ -53,7 +54,7 @@ class KernelNN3(torch.nn.Module):
         x = self.fc2(x)
         return x
 
-def plot(pred, y, a_ori=None, diff_v_limit=0.01, title=""):
+def plot(pred, y, a_ori, resolution, diff_v_limit=0.01, title=""):
     vmin = min(pred.min().item(), y.min().item())
     vmax = max(pred.max().item(), y.max().item())
     fontsize = 15
@@ -64,17 +65,17 @@ def plot(pred, y, a_ori=None, diff_v_limit=0.01, title=""):
     mae = nn.L1Loss()(pred.view(1,-1), y.view(1, -1)).item()
     fig = plt.figure(figsize=(25,4.5))
     plt.subplot(1,3+add_plot,1)
-    sns.heatmap(to_np_array(pred).reshape(32,32), square=True, xticklabels=False, vmin=vmin, vmax=vmax, yticklabels=False)
+    sns.heatmap(to_np_array(pred).reshape(resolution,resolution), square=True, xticklabels=False, vmin=vmin, vmax=vmax, yticklabels=False)
     plt.title(f"{title}: pred, L2={L2:.6f}", fontsize=fontsize)
     plt.subplot(1,3+add_plot,2)
-    sns.heatmap(to_np_array(y).reshape(32,32), square=True, xticklabels=False, vmin=vmin, vmax=vmax, yticklabels=False)
+    sns.heatmap(to_np_array(y).reshape(resolution,resolution), square=True, xticklabels=False, vmin=vmin, vmax=vmax, yticklabels=False)
     plt.title(f"gt, MAE={mae:.6f}", fontsize=fontsize)
     plt.subplot(1,3+add_plot,3)
-    sns.heatmap(to_np_array(pred - y).reshape(32,32), square=True, xticklabels=False, yticklabels=False, vmin=-diff_v_limit, vmax=diff_v_limit, cmap="PiYG")
+    sns.heatmap(to_np_array(pred - y).reshape(resolution,resolution), square=True, xticklabels=False, yticklabels=False, vmin=-diff_v_limit, vmax=diff_v_limit, cmap="PiYG")
     plt.title("pred - gt", fontsize=fontsize)
     if add_plot > 0:
         plt.subplot(1,3+add_plot,4)
-        sns.heatmap(to_np_array(a_ori).reshape(32,32), square=True, xticklabels=False, yticklabels=False)
+        sns.heatmap(to_np_array(a_ori).reshape(resolution,resolution), square=True, xticklabels=False, yticklabels=False)
         plt.title("f", fontsize=fontsize)
     plt.show()
     return fig
@@ -85,6 +86,8 @@ def plot(pred, y, a_ori=None, diff_v_limit=0.01, title=""):
 
 parser = argparse.ArgumentParser(description='Training')
 
+parser.add_argument('--dataset_type', default="poisson1.0-32", type=str,
+                    help='dataset type')
 parser.add_argument('--epochs', default=1000, type=int,
                     help='Epochs')
 parser.add_argument('--lr', default=0.0001, type=float,
@@ -98,6 +101,7 @@ try:
     get_ipython().run_line_magic('autoreload', '2')
     is_jupyter = True
     args = parser.parse_args([])
+    args.dataset_type = "poisson1.0-64"
 except:
     args = parser.parse_args()
 
@@ -105,11 +109,12 @@ except:
 # In[ ]:
 
 
-dataset_type = "poisson1.0"
+dataset_type = args.dataset_type
+resolution = eval(dataset_type.split("-")[1])
 
 TRAIN_PATH = 'data/piececonst_r241_N1024_smooth1.mat'
 TEST_PATH = 'data/piececonst_r241_N1024_smooth2.mat'
-DATA_PATH = "../../data/Poisson1.0/files/"
+DATA_PATH = f"../../data/Poisson1.0_{resolution}/files/"
 
 ms = [200]
 case = 0
@@ -164,14 +169,14 @@ if dataset_type == "darcy":
     test_a_gradx = reader.read_field('Kcoeff_x')[:ntest,::r,::r].reshape(ntest,-1)
     test_a_grady = reader.read_field('Kcoeff_y')[:ntest,::r,::r].reshape(ntest,-1)
     test_u = reader.read_field('sol')[:ntest,::r,::r].reshape(ntest,-1)
-elif dataset_type == "poisson1.0":
-    s = int(((32 - 1)/r) + 1)
+elif dataset_type.startswith("poisson1.0"):
+    s = int(((resolution - 1)/r) + 1)
     n = s**2
     print('resolution', s)
 
     ntrain = 900
     ntest = 100
-    path = 'poisson_s'+str(s)+'_ntrain'+str(ntrain)+'_kerwidth'+str(ker_width) + '_m0' + str(m)
+    path = 'poisson_s'+str(s)+'_dataset_' + dataset_type + '_ntrain'+str(ntrain)+'_kerwidth'+str(ker_width) + '_m0' + str(m)
     path_model = 'model/' + path
     path_train_err = 'results/' + path + 'train.txt'
     path_test_err = 'results/' + path + 'test.txt'
@@ -183,24 +188,24 @@ elif dataset_type == "poisson1.0":
 
     f_all = np.load(DATA_PATH + "RHS_all.npy")
     sol_all = np.load(DATA_PATH + "SOL_all.npy")
+    gblur = GaussianBlur(kernel_size=5, sigma=5)
 
     all_a = f_all[:,:,-1]
-    all_a_smooth = all_a
-    all_a_reshape = all_a.reshape(-1, 32, 32)
+    all_a_smooth = to_np_array(gblur(torch.tensor(all_a.reshape(all_a.shape[0], resolution, resolution))).flatten(start_dim=1))
+    all_a_reshape = all_a_smooth.reshape(-1, resolution, resolution)
     all_a_gradx = np.concatenate([
         all_a_reshape[:,1:2] - all_a_reshape[:,0:1],
         (all_a_reshape[:,2:] - all_a_reshape[:,:-2]) / 2,
         all_a_reshape[:,-1:] - all_a_reshape[:,-2:-1],
     ], 1)
-    all_a_gradx = all_a_gradx.reshape(-1, 1024)
+    all_a_gradx = all_a_gradx.reshape(-1, n)
     all_a_grady = np.concatenate([
         all_a_reshape[:,:,1:2] - all_a_reshape[:,:,0:1],
         (all_a_reshape[:,:,2:] - all_a_reshape[:,:,:-2]) / 2,
         all_a_reshape[:,:,-1:] - all_a_reshape[:,:,-2:-1],
     ], 2)
-    all_a_grady = all_a_grady.reshape(-1, 1024)
+    all_a_grady = all_a_grady.reshape(-1, n)
     all_u = sol_all[:,:,0]
-
 
     train_a = torch.FloatTensor(all_a[:ntrain])
     train_a_smooth = torch.FloatTensor(all_a_smooth[:ntrain])
@@ -287,16 +292,17 @@ ttest = np.zeros((epochs,))
 model.train()
 
 # Load model:
-data_record = pickle.load(open("model/poisson_s32_ntrain900_kerwidth256_m0200", "rb"))
+filename = f"poisson_s{resolution}_dataset_{dataset_type}_ntrain900_kerwidth256_m0200"
+data_record = pickle.load(open(f"model/{filename}", "rb"))
 model.load_state_dict(data_record["state_dict"][-1])
 
 
 # In[ ]:
 
 
-isplot = False
+isplot = True
 if isplot:
-    pdf = matplotlib.backends.backend_pdf.PdfPages("analysis.pdf")
+    pdf = matplotlib.backends.backend_pdf.PdfPages(f"model/analysis_{filename}.pdf")
 analysis_record = {}
 model.eval()
 with torch.no_grad():
@@ -309,7 +315,7 @@ with torch.no_grad():
         mae_item = nn.L1Loss()(out, data.y.view(batch_size2, -1)).item()
         record_data(analysis_record, [l2_item, mae_item], ["L2", "MAE"])
         if isplot:
-            fig = plot(out, data.y, a_ori=a_ori, diff_v_limit=0.0075, title=f"{901+ii}")
+            fig = plot(out, data.y, a_ori=a_ori, resolution=resolution, diff_v_limit=0.0075, title=f"{901+ii}")
             pdf.savefig(fig)
 if isplot:
     pdf.close()
@@ -324,5 +330,24 @@ plt.scatter(analysis_record["MAE"], analysis_record["L2"], s=6)
 plt.xlabel("MAE", fontsize=fontsize)
 plt.ylabel("L2", fontsize=fontsize)
 plt.tick_params(labelsize=fontsize)
+plt.title(f"L2 = {np.mean(analysis_record['L2']):.6f}" + r" $\pm$ " + f"{np.std(analysis_record['L2']):.6f},   "
+          f"MAE = {np.mean(analysis_record['MAE']):.6f}" + r" $\pm$ " + f"{np.std(analysis_record['MAE']):.6f}")
+plt.savefig(f"model/plot_{filename}.pdf", bbox_inches="tight")
+plt.show()
+
+
+# In[ ]:
+
+
+# 32:
+fontsize = 14
+plt.figure(figsize=(8,6))
+plt.scatter(analysis_record["MAE"], analysis_record["L2"], s=6)
+plt.xlabel("MAE", fontsize=fontsize)
+plt.ylabel("L2", fontsize=fontsize)
+plt.tick_params(labelsize=fontsize)
+plt.title(f"L2 = {np.mean(analysis_record['L2']):.6f}" + r" $\pm$ " + f"{np.std(analysis_record['L2']):.6f},   "
+          f"MAE = {np.mean(analysis_record['MAE']):.6f}" + r" $\pm$ " + f"{np.std(analysis_record['MAE']):.6f}")
+plt.savefig(f"model/plot_{filename}.pdf", bbox_inches="tight")
 plt.show()
 
